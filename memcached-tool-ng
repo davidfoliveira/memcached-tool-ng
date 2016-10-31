@@ -1,0 +1,303 @@
+#!/usr/bin/perl
+#
+# memcached-tool:
+#   stats/management tool for memcached.
+#
+# Author:
+#   Brad Fitzpatrick <brad@danga.com>
+#
+# Contributor:
+#   Andrey Niakhaichyk <andrey@niakhaichyk.org>
+#
+# License:
+#   public domain.  I give up all rights to this
+#   tool.  modify and copy at will.
+#
+
+use strict;
+use warnings;
+use IO::Socket::INET;
+
+# Our colors
+my %colorCodes = (
+   green  => "\033[32m",
+   white  => "\033[0m",
+   yellow => "\033[33m",
+   red    => "\033[31m"
+);
+my %numToColors = (
+   0  => 'white',
+   1  => 'yellow',
+   2  => 'red'
+);
+
+
+# Useful functions
+sub hrMem {
+	my ($bytes) = @_;
+	if ( $bytes < 1024 ) {
+		return "$bytes b";
+	}
+	if ( $bytes < 1024*1024 ) {
+		return sprintf("%.2f",$bytes/1024)." KB";
+	}
+	if ( $bytes < 1024*1024*1024 ) {
+		return sprintf("%.2f",$bytes/1024/1024)." MB";
+	}
+	if ( $bytes < 1024*1024*1024*1024 ) {
+		return sprintf("%.2f",$bytes/1024/1024/1024)." GB";
+	}
+	return "$bytes b";
+}
+
+
+# Everything starts here
+my $addr = shift;
+my $mode = shift || "display";
+my ($from, $to);
+
+if ($mode eq "display") {
+    undef $mode if @ARGV;
+} elsif ($mode eq "move") {
+    $from = shift;
+    $to = shift;
+    undef $mode if $from < 6 || $from > 17;
+    undef $mode if $to   < 6 || $to   > 17;
+    print STDERR "ERROR: parameters out of range\n\n" unless $mode;
+} elsif ($mode eq 'dump') {
+    ;
+} elsif ($mode eq 'stats') {
+    ;
+} elsif ($mode eq 'settings') {
+    ;
+} elsif ($mode eq 'sizes') {
+    ;
+} else {
+    undef $mode;
+}
+
+undef $mode if @ARGV;
+
+die
+    "Usage: memcached-tool <host[:port] | /path/to/socket> [mode]\n
+       memcached-tool 10.0.0.5:11211 display    # shows slabs
+       memcached-tool 10.0.0.5:11211            # same.  (default is display)
+       memcached-tool 10.0.0.5:11211 stats      # shows general stats
+       memcached-tool 10.0.0.5:11211 settings   # shows settings stats
+       memcached-tool 10.0.0.5:11211 sizes      # shows sizes stats
+       memcached-tool 10.0.0.5:11211 dump       # dumps keys and values
+
+WARNING! sizes is a development command.
+As of 1.4 it is still the only command which will lock your memcached instance for some time.
+If you have many millions of stored items, it can become unresponsive for several minutes.
+Run this at your own risk. It is roadmapped to either make this feature optional
+or at least speed it up.
+" unless $addr && $mode;
+
+
+my $sock;
+if ($addr =~ m:/:) {
+    $sock = IO::Socket::UNIX->new(
+        Peer => $addr,
+    );
+}
+else {
+    $addr .= ':11211' unless $addr =~ /:\d+$/;
+
+    $sock = IO::Socket::INET->new(
+        PeerAddr => $addr,
+        Proto    => 'tcp',
+    );
+}
+die "Couldn't connect to $addr\n" unless $sock;
+
+print "$addr:\n";
+
+# The dump mode
+if ($mode eq 'dump') {
+    my %items;
+    my $totalitems;
+
+    print $sock "stats items\r\n";
+
+    while (<$sock>) {
+        last if /^END/;
+        if (/^STAT items:(\d*):number (\d*)/) {
+            $items{$1} = $2;
+            $totalitems += $2;
+        }
+    }
+    print STDERR "Dumping memcache contents\n";
+    print STDERR "  Number of buckets: " . scalar(keys(%items)) . "\n";
+    print STDERR "  Number of items  : $totalitems\n";
+
+    foreach my $bucket (sort(keys(%items))) {
+        print STDERR "Dumping bucket $bucket - " . $items{$bucket} . " total items\n";
+        print $sock "stats cachedump $bucket $items{$bucket}\r\n";
+        my %keyexp;
+        while (<$sock>) {
+            last if /^END/;
+            # return format looks like this
+            # ITEM foo [6 b; 1176415152 s]
+            if (/^ITEM (\S+) \[.* (\d+) s\]/) {
+                $keyexp{$1} = $2;
+            }
+        }
+
+        foreach my $k (keys(%keyexp)) {
+            print $sock "get $k\r\n";
+            my $response = <$sock>;
+            if ($response =~ /VALUE (\S+) (\d+) (\d+)/) {
+                my $flags = $2;
+                my $len = $3;
+                my $val;
+                read $sock, $val, $len;
+                print "add $k $flags $keyexp{$k} $len\r\n$val\r\n";
+                # get the END
+                $_ = <$sock>;
+                $_ = <$sock>;
+            }
+        }
+    }
+}
+
+
+# The stats mode
+elsif ($mode eq 'stats') {
+    my %items;
+
+    print $sock "stats\r\n";
+
+    while (<$sock>) {
+        last if /^END/;
+        chomp;
+        if (/^STAT\s+(\S*)\s+(.*)/) {
+            $items{$1} = $2;
+        }
+    }
+    printf ("#%-17s %5s %11s\n", $addr, "Field", "Value");
+    foreach my $name (sort(keys(%items))) {
+        printf ("%24s %12s\n", $name, $items{$name});
+
+    }
+}
+
+
+# The settings mode
+elsif ($mode eq 'settings') {
+    my %items;
+
+    print $sock "stats settings\r\n";
+
+    while (<$sock>) {
+        last if /^END/;
+        chomp;
+        if (/^STAT\s+(\S*)\s+(.*)/) {
+            $items{$1} = $2;
+        }
+    }
+    printf ("#%-17s %5s %11s\n", $addr, "Field", "Value");
+    foreach my $name (sort(keys(%items))) {
+        printf ("%24s %12s\n", $name, $items{$name});
+    }
+}
+
+
+# The sizes mode
+elsif ($mode eq 'sizes') {
+    my %items;
+
+    print $sock "stats sizes\r\n";
+
+    while (<$sock>) {
+        last if /^END/;
+        chomp;
+        if (/^STAT\s+(\S*)\s+(.*)/) {
+            $items{$1} = $2;
+        }
+    }
+    printf ("#%-17s %5s %11s\n", $addr, "Size", "Count");
+    foreach my $name (sort(keys(%items))) {
+        printf ("%24s %12s\n", $name, $items{$name});
+    }
+}
+
+
+# The display mode:
+elsif ( $mode eq "display" ) {
+
+    # Ask memcached for item stats and parse it
+    print $sock "stats items\r\n";
+
+    my $max = 0;
+    my %items;
+    while (<$sock>) {
+        last if /^END/;
+        if (/^STAT items:(\d+):(\w+) (\d+)/) {
+            $items{$1}{$2} = $3;
+        }
+    }
+
+    print $sock "stats slabs\r\n";
+    while (<$sock>) {
+        last if /^END/;
+        if (/^STAT (\d+):(\w+) (\d+)/) {
+            $items{$1}{$2} = $3;
+            $max = $1;
+        }
+    }
+
+
+    # The default slab stats
+    my $defaultStats = { age => 0, total_pages => 0, chunk_size => 0, mem_requested => 0, evicted => 0, evicted_time => 0, outofmemory => 0 };
+
+    # Get the memory totals
+    my $totMemory = 0;
+    my $totReqMem = 0;
+    foreach my $n (1..$max) {
+        my $it = $items{$n} || $defaultStats;
+	foreach my $p ( keys %{$defaultStats} ) {
+		$it->{$p} = $defaultStats->{$p} if ! defined $it->{$p};
+	}
+        $totMemory += $it->{total_pages}*1024*1024;
+        $totReqMem += $it->{mem_requested};
+    }
+
+    # Print it
+    print "   #  Item_Size    Max_age   Pages     Count   Used Mem     To Store   Efficiency              Evicted  Evict_Time          OOM\n";
+
+    foreach my $n (1..$max) {
+        my $it = $items{$n} || $defaultStats;
+	foreach my $p ( keys %{$defaultStats} ) {
+		$it->{$p} = $defaultStats->{$p} if ! defined $it->{$p};
+	}
+        next if (0 == $it->{total_pages});
+        my $size = $it->{chunk_size} < 1024 ?
+            "$it->{chunk_size}B" :
+            sprintf("%.1fK", $it->{chunk_size} / 1024.0);
+        my $full = $it->{free_chunks_end} == 0 ? "yes" : " no";
+
+        my $usedMem = $it->{total_pages}*1024*1024;
+        my $effic = ($it->{mem_requested}*100)/$usedMem;
+        my $ineffic = (100-$effic);
+        my $totMemPct = ($usedMem * 100) / $totMemory;
+        my $danger = $totMemPct * $ineffic;
+        my $colorIdx = int(($danger * 3) / 10000);
+        my $colorCode = $colorCodes{$numToColors{$colorIdx}};
+
+        printf("$colorCode %3d %10s %9ds %7d %9d %10s %12s %10.2f %% %20d %11d %12d\n",
+               $n, $size, $it->{age}, $it->{total_pages} || 0,
+               $it->{number} || 0, hrMem($it->{total_pages}*1024*1024), hrMem($it->{mem_requested}), $effic, $it->{evicted},
+               $it->{evicted_time}, $it->{outofmemory});
+    }
+
+
+    my $effic = $totMemory ? ($totReqMem*100)/$totMemory : "N/A";
+    my $totMemPct = $totMemory ? ($totReqMem * 100) / $totMemory : 0;
+    my $colorIdx = 2-int(($totMemPct * 3) / 100);
+    my $color = $colorCodes{($colorIdx ? $numToColors{$colorIdx} : "green")};
+    print "\033[0m\n";
+    print "Total used memory: ".hrMem($totMemory)." (for ".hrMem($totReqMem)." of data)\n";
+    print "Global efficiency:  $color".($totMemory ? sprintf("%.2f",($totReqMem*100)/$totMemory) : "N/A")." %\n";
+    print "\033[0m\n\n";
+}

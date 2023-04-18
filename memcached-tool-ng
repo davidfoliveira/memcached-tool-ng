@@ -270,7 +270,7 @@ elsif ( $mode eq "display" ) {
 	foreach my $p ( keys %{$defaultStats} ) {
 		$it->{$p} = $defaultStats->{$p} if ! defined $it->{$p};
 	}
-        $totMemory += $it->{total_pages}*$item_size_max;
+        $totMemory += $it->{total_pages}*1024*1024;
         $totReqMem += $it->{mem_requested};
     }
 
@@ -288,7 +288,7 @@ elsif ( $mode eq "display" ) {
             sprintf("%.1fK", $it->{chunk_size} / 1024.0);
         my $full = $it->{free_chunks_end} == 0 ? "yes" : " no";
 
-        my $usedMem = $it->{total_pages}*$item_size_max;
+        my $usedMem = $it->{total_pages}*1024*1024;
         my $effic = ($it->{mem_requested}*100)/$usedMem;
         my $ineffic = (100-$effic);
         my $totMemPct = ($usedMem * 100) / $totMemory;
@@ -298,7 +298,7 @@ elsif ( $mode eq "display" ) {
 
         printf("$colorCode %3d %10s %9ds %7d %9d %10s %12s %10.2f %% %20d %11d %12d\n",
                $n, $size, $it->{age}, $it->{total_pages} || 0,
-               $it->{number} || 0, hrMem($it->{total_pages}*$item_size_max), hrMem($it->{mem_requested}), $effic, $it->{evicted},
+               $it->{number} || 0, hrMem($it->{total_pages}*1024*1024), hrMem($it->{mem_requested}), $effic, $it->{evicted},
                $it->{evicted_time}, $it->{outofmemory});
     }
 

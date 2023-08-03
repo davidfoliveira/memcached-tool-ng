@@ -283,9 +283,7 @@ elsif ( $mode eq "display" ) {
 		$it->{$p} = $defaultStats->{$p} if ! defined $it->{$p};
 	}
         next if (0 == $it->{total_pages});
-        my $size = $it->{chunk_size} < 1024 ?
-            "$it->{chunk_size}B" :
-            sprintf("%.1fK", $it->{chunk_size} / 1024.0);
+        my $size = hrMem($it->{chunk_size});
         my $full = $it->{free_chunks_end} == 0 ? "yes" : " no";
 
         my $usedMem = $it->{total_pages}*$item_size_max;
